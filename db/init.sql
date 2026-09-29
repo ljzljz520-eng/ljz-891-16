@@ -36,6 +36,20 @@ CREATE TABLE IF NOT EXISTS verification_codes (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Query Logs (前台每次查询留痕；只记录核对所需信息，禁止写入验证码/密码等敏感数据)
+CREATE TABLE IF NOT EXISTS query_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    queried_qq VARCHAR(20) NOT NULL COMMENT '用户输入的授权QQ',
+    queried_owner VARCHAR(50) NOT NULL DEFAULT '' COMMENT '用户输入的授权主人',
+    product_name VARCHAR(100) NOT NULL DEFAULT '' COMMENT '命中时记录所属产品，未命中为空',
+    is_hit TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否命中授权 1=命中 0=未命中',
+    ip VARCHAR(45) NOT NULL DEFAULT '' COMMENT '访问IP，兼容IPv6',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '查询时间',
+    INDEX idx_created_at (created_at),
+    INDEX idx_qq (queried_qq),
+    INDEX idx_hit (is_hit)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Seed Data (Test Accounts)
 -- Password is '123456' hashed with BCRYPT (Cost 10)
 INSERT INTO admins (username, password) VALUES 

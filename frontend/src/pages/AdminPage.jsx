@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { toast } from 'react-hot-toast';
-import { Lock, User, Plus, Trash2, Search, Sliders, Users, Shield } from 'lucide-react';
+import { Lock, User, Plus, Trash2, Search, Sliders, Users, Shield, ScrollText, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import Modal from '../components/Modal';
 
 export default function AdminPage() {
@@ -24,9 +24,20 @@ export default function AdminPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
 
   // Admin Management State
-  const [activeTab, setActiveTab] = useState('license'); // 'license' | 'admin'
+  const [activeTab, setActiveTab] = useState('license'); // 'license' | 'admin' | 'logs'
   const [admins, setAdmins] = useState([]);
   const [newAdmin, setNewAdmin] = useState({ username: '', password: '' });
+
+  // Query Logs State（查询记录：日期筛选 / 分页 / 统计 / 导出）
+  const [logStartDate, setLogStartDate] = useState('');
+  const [logEndDate, setLogEndDate] = useState('');
+  const [logPage, setLogPage] = useState(1);
+  const [logs, setLogs] = useState([]);
+  const [logTotal, setLogTotal] = useState(0);
+  const [logHitCount, setLogHitCount] = useState(0);
+  const [logMissCount, setLogMissCount] = useState(0);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const LOG_PAGE_SIZE = 20;
 
   useEffect(() => {
     if (token) {
@@ -95,6 +106,63 @@ export default function AdminPage() {
       } catch (err) {
           console.error(err);
       }
+  };
+
+  const buildLogParams = (page = logPage) => {
+      const params = { page, page_size: LOG_PAGE_SIZE };
+      if (logStartDate) params.start_date = logStartDate;
+      if (logEndDate) params.end_date = logEndDate;
+      return params;
+  };
+
+  const fetchLogs = async (page = logPage) => {
+      setLogsLoading(true);
+      try {
+          const res = await axios.get('/api/license/query-logs', { params: buildLogParams(page) });
+          setLogs(res.data.list || []);
+          setLogTotal(res.data.total || 0);
+          setLogHitCount(res.data.hit_count || 0);
+          setLogMissCount(res.data.miss_count || 0);
+          setLogPage(res.data.page || 1);
+      } catch (err) {
+          toast.error('查询记录加载失败');
+      } finally {
+          setLogsLoading(false);
+      }
+  };
+
+  const handleLogSearch = (e) => {
+      e.preventDefault();
+      if (logStartDate && logEndDate && logStartDate > logEndDate) {
+          toast.error('开始日期不能晚于结束日期');
+          return;
+      }
+      fetchLogs(1);
+  };
+
+  const handleLogReset = () => {
+      setLogStartDate('');
+      setLogEndDate('');
+      setLogPage(1);
+      // 下一帧再请求，确保 state 已清空
+      setTimeout(() => fetchLogs(1), 0);
+  };
+
+  const handleExportLogs = () => {
+      if (logStartDate && logEndDate && logStartDate > logEndDate) {
+          toast.error('开始日期不能晚于结束日期');
+          return;
+      }
+      const qs = new URLSearchParams(buildLogParams(1));
+      qs.delete('page');
+      qs.delete('page_size');
+      // 直接走浏览器下载（该接口返回 CSV 附件）
+      window.open(`/api/license/export-logs?${qs.toString()}`, '_blank');
+  };
+
+  const switchTab = (tab) => {
+      setActiveTab(tab);
+      if (tab === 'logs') fetchLogs(1);
   };
 
   const handleCreateAdmin = async (e) => {
@@ -169,16 +237,18 @@ export default function AdminPage() {
           <p className="text-white/40 mt-1">System Administration Dashboard</p>
         </div>
         <div className="flex items-center gap-4">
-           <div className="relative">
-             <input 
-                type="text" 
-                placeholder="搜索QQ、主人或产品..." 
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                className="glass-input pl-10 pr-4 py-2 w-64 text-sm"
-             />
-             <Search className="absolute left-3 top-2.5 w-4 h-4 text-white/30" />
-           </div>
+           {activeTab !== 'logs' && (
+             <div className="relative">
+               <input
+                  type="text"
+                  placeholder="搜索QQ、主人或产品..."
+                  value={searchTerm}
+                  onChange={e => setSearchTerm(e.target.value)}
+                  className="glass-input pl-10 pr-4 py-2 w-64 text-sm"
+               />
+               <Search className="absolute left-3 top-2.5 w-4 h-4 text-white/30" />
+             </div>
+           )}
            <button onClick={() => {localStorage.removeItem('auth_token'); setToken(null);}} className="px-4 py-2 rounded-lg bg-white/5 hover:bg-red-500/20 text-white/60 hover:text-red-400 transition border border-white/5 hover:border-red-500/30">
              退出登录
            </button>
@@ -186,8 +256,74 @@ export default function AdminPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-        {/* Sidebar: Add Form */}
+        {/* Sidebar: Add Form / Log Filters */}
         <div className="lg:col-span-1">
+          {activeTab === 'logs' ? (
+            <div className="glass-card p-6 sticky top-6 space-y-5">
+              <h3 className="text-lg font-bold flex items-center gap-2 text-white">
+                <div className="p-1.5 bg-sky-500/20 rounded-lg text-sky-400">
+                  <ScrollText className="w-4 h-4"/>
+                </div>
+                按日期筛选
+              </h3>
+              <form onSubmit={handleLogSearch} className="space-y-4">
+                <div className="space-y-1">
+                  <label className="text-xs text-white/40">开始日期</label>
+                  <input
+                    type="date"
+                    value={logStartDate}
+                    max={logEndDate || undefined}
+                    onChange={e => setLogStartDate(e.target.value)}
+                    className="glass-input w-full"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-white/40">结束日期</label>
+                  <input
+                    type="date"
+                    value={logEndDate}
+                    min={logStartDate || undefined}
+                    onChange={e => setLogEndDate(e.target.value)}
+                    className="glass-input w-full"
+                  />
+                </div>
+                <div className="flex gap-2 pt-1">
+                  <button type="submit" className="tech-button flex-1 flex justify-center items-center gap-2 !py-2 !text-sm">
+                    <Search size={14}/> 查询
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleLogReset}
+                    className="px-4 py-2 rounded-lg bg-white/5 text-white/60 hover:bg-white/10 border border-white/5 text-sm"
+                  >
+                    重置
+                  </button>
+                </div>
+              </form>
+
+              <button
+                onClick={handleExportLogs}
+                className="w-full flex justify-center items-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 transition text-sm font-medium"
+              >
+                <Download size={15}/> 导出当前筛选 CSV
+              </button>
+
+              <div className="border-t border-white/5 pt-4 space-y-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-white/40">总查询次数</span>
+                  <span className="text-white font-mono font-semibold">{logTotal}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-white/40">命中</span>
+                  <span className="text-emerald-400 font-mono font-semibold">{logHitCount}</span>
+                </div>
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-white/40">未命中</span>
+                  <span className="text-red-400 font-mono font-semibold">{logMissCount}</span>
+                </div>
+              </div>
+            </div>
+          ) : (
           <div className="glass-card p-6 sticky top-6">
               <h3 className="text-lg font-bold mb-6 flex items-center gap-2 text-white">
                 <div className="p-1.5 bg-sky-500/20 rounded-lg text-sky-400">
@@ -238,35 +374,86 @@ export default function AdminPage() {
                  </div>
               </form>
           </div>
+          )}
         </div>
 
         {/* Main: Details List */}
         <div className="lg:col-span-3">
            <div className="glass-card overflow-hidden flex flex-col min-h-[600px]">
-             <div className="p-6 border-b border-white/5 flex justify-between items-center bg-white/5">
+             <div className="p-6 border-b border-white/5 flex justify-between items-center bg-white/5 gap-4 flex-wrap">
                  <h3 className="font-bold flex items-center gap-2">
-                    {activeTab === 'license' ? <Sliders size={18} className="text-sky-400"/> : <Shield size={18} className="text-sky-400"/>}
-                    {activeTab === 'license' ? '授权列表' : '管理员列表'}
+                    {activeTab === 'license' && <Sliders size={18} className="text-sky-400"/>}
+                    {activeTab === 'admin' && <Shield size={18} className="text-sky-400"/>}
+                    {activeTab === 'logs' && <ScrollText size={18} className="text-sky-400"/>}
+                    {activeTab === 'license' ? '授权列表' : activeTab === 'admin' ? '管理员列表' : '查询记录'}
                     <span className="px-2 py-0.5 rounded-full bg-white/10 text-xs text-white/60">
-                        {activeTab === 'license' ? filteredLicenses.length : admins.length}
+                        {activeTab === 'license' ? filteredLicenses.length : activeTab === 'admin' ? admins.length : logTotal}
                     </span>
                  </h3>
                  <div className="flex space-x-2">
-                    <button 
-                        onClick={() => setActiveTab('license')}
+                    <button
+                        onClick={() => switchTab('license')}
                         className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'license' ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30' : 'bg-white/5 text-white/60 hover:bg-white/10 border border-white/5'}`}
                     >
                         <Users className="inline-block w-4 h-4 mr-2" /> 授权管理
                     </button>
-                    <button 
-                        onClick={() => setActiveTab('admin')}
+                    <button
+                        onClick={() => switchTab('admin')}
                         className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'admin' ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30' : 'bg-white/5 text-white/60 hover:bg-white/10 border border-white/5'}`}
                     >
                         <Shield className="inline-block w-4 h-4 mr-2" /> 管理员管理
                     </button>
+                    <button
+                        onClick={() => switchTab('logs')}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'logs' ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30' : 'bg-white/5 text-white/60 hover:bg-white/10 border border-white/5'}`}
+                    >
+                        <ScrollText className="inline-block w-4 h-4 mr-2" /> 查询记录
+                    </button>
                  </div>
              </div>
                           <div className="overflow-x-auto flex-1">
+                {activeTab === 'logs' ? (
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="text-xs font-semibold text-white/40 uppercase tracking-wider bg-black/20">
+                      <th className="p-4">查询时间</th>
+                      <th className="p-4">授权QQ</th>
+                      <th className="p-4">授权主人</th>
+                      <th className="p-4">所属产品</th>
+                      <th className="p-4">是否命中</th>
+                      <th className="p-4">访问IP</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {logsLoading ? (
+                       <tr><td colSpan="6" className="p-12 text-center text-white/30">加载中...</td></tr>
+                    ) : logs.length === 0 ? (
+                       <tr><td colSpan="6" className="p-12 text-center text-white/30">该日期范围内暂无查询记录</td></tr>
+                    ) : (
+                      logs.map(item => (
+                        <tr key={item.id} className="hover:bg-white/[0.02] transition">
+                          <td className="p-4 text-white/70 font-mono text-xs whitespace-nowrap">{item.created_at}</td>
+                          <td className="p-4 text-sky-300 font-mono text-sm">{item.queried_qq}</td>
+                          <td className="p-4 text-sm text-white/80">{item.queried_owner || '-'}</td>
+                          <td className="p-4 text-sm">
+                            {item.product_name
+                              ? item.product_name
+                              : <span className="text-white/30">—</span>}
+                          </td>
+                          <td className="p-4">
+                            {item.is_hit === 1 ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">命中</span>
+                            ) : (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20">未命中</span>
+                            )}
+                          </td>
+                          <td className="p-4 text-white/50 font-mono text-xs">{item.ip || '-'}</td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+                ) : (
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="text-xs font-semibold text-white/40 uppercase tracking-wider bg-black/20">
@@ -287,7 +474,7 @@ export default function AdminPage() {
                             <th className="p-4"></th>
                           </>
                       )}
-                      
+
                       <th className="p-4 text-right">管理</th>
                     </tr>
                   </thead>
@@ -344,10 +531,10 @@ export default function AdminPage() {
                                 <td className="p-4"></td>
                               </>
                           )}
-                          
+
                           <td className="p-4 text-right">
-                            <button 
-                              onClick={() => confirmDelete(item.id, activeTab)} 
+                            <button
+                              onClick={() => confirmDelete(item.id, activeTab)}
                               className="text-white/20 hover:text-red-400 p-2 rounded-lg hover:bg-red-500/10 transition opacity-0 group-hover:opacity-100"
                               title="删除"
                             >
@@ -359,12 +546,37 @@ export default function AdminPage() {
                     )}
                   </tbody>
                 </table>
+                )}
               </div>
-              
-              {/* Pagination or Footer (Simple) */}
-              <div className="p-4 border-t border-white/5 text-xs text-white/30 text-center">
-                End of List
-              </div>
+
+              {/* Footer：日志页显示分页，其它页保持原样 */}
+              {activeTab === 'logs' ? (
+                <div className="p-4 border-t border-white/5 flex items-center justify-between text-xs text-white/40">
+                  <span>
+                    共 {logTotal} 条 · 第 {logPage} / {Math.max(1, Math.ceil(logTotal / LOG_PAGE_SIZE))} 页
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      disabled={logPage <= 1 || logsLoading}
+                      onClick={() => fetchLogs(logPage - 1)}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/5 border border-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
+                    >
+                      <ChevronLeft size={14}/> 上一页
+                    </button>
+                    <button
+                      disabled={logPage >= Math.ceil(logTotal / LOG_PAGE_SIZE) || logsLoading}
+                      onClick={() => fetchLogs(logPage + 1)}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-white/5 border border-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition"
+                    >
+                      下一页 <ChevronRight size={14}/>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-4 border-t border-white/5 text-xs text-white/30 text-center">
+                  End of List
+                </div>
+              )}
             </div>
         </div>
       </div>
