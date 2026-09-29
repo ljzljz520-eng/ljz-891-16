@@ -19,8 +19,8 @@ class LicenseController {
             return;
         }
 
-        $qq = $_GET['qq'];
-        $owner = $_GET['owner'];
+        $qq = $this->truncate($_GET['qq'], 20);
+        $owner = $this->truncate($_GET['owner'], 50);
 
         $query = "SELECT * FROM licenses WHERE qq = :qq AND owner_name = :owner LIMIT 1";
         $stmt = $this->db->prepare($query);
@@ -34,7 +34,10 @@ class LicenseController {
             // But prompt also lists reasons for failure: "1.授权开通不足60分钟内" (implies < 60 mins from creation?) - this is weird, maybe it means 'just created'? or 'not synced'?
             // Usually "Authorization not found" reasons are generic boilerplate.
             // Let's just return the data.
-            
+
+            // 记录命中查询（不记录任何验证码/密码类信息）
+            $this->recordQuery($qq, $owner, $row['product_name'], 1);
+
             http_response_code(200);
             echo json_encode([
                 "status" => "success",
@@ -48,6 +51,9 @@ class LicenseController {
                 ]
             ]);
         } else {
+            // 记录未命中查询
+            $this->recordQuery($qq, $owner, null, 0);
+
             // Failure with specific message
             http_response_code(404);
             echo json_encode([
@@ -62,6 +68,59 @@ class LicenseController {
         }
     }
 
+    /**
+     * 记录一次前台查询行为。
+     * 仅保存：授权QQ、授权主人、所属产品、是否命中、访问IP、查询时间。
+     * 绝不写入验证码、密码等敏感字段；写入失败不影响正常查询。
+     */
+    private function recordQuery($qq, $owner, $product, $isHit) {
+        try {
+            $sql = "INSERT INTO query_logs (qq, owner_name, product_name, is_hit, ip)
+                    VALUES (:qq, :owner, :product, :hit, :ip)";
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([
+                ':qq'      => $this->truncate($qq, 20),
+                ':owner'   => $owner !== null && $owner !== '' ? $this->truncate($owner, 50) : null,
+                ':product' => $product !== null ? $this->truncate($product, 100) : null,
+                ':hit'     => $isHit ? 1 : 0,
+                ':ip'      => $this->getClientIp(),
+            ]);
+        } catch (\PDOException $e) {
+            error_log("recordQuery failed: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * 获取访问IP（经 nginx 代理时读取 X-Real-IP / X-Forwarded-For）。
+     */
+    private function getClientIp() {
+        $ip = null;
+        if (!empty($_SERVER['HTTP_X_REAL_IP'])) {
+            $ip = $_SERVER['HTTP_X_REAL_IP'];
+        } elseif (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+            $parts = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
+            $ip = trim($parts[0]);
+        } elseif (!empty($_SERVER['REMOTE_ADDR'])) {
+            $ip = $_SERVER['REMOTE_ADDR'];
+        }
+        // 校验格式并限制长度，防止脏数据注入
+        if ($ip !== null && filter_var($ip, FILTER_VALIDATE_IP)) {
+            return substr($ip, 0, 45);
+        }
+        return null;
+    }
+
+    /**
+     * 截断字符串，保证不超出字段长度。
+     */
+    private function truncate($value, $maxLen) {
+        $value = trim((string)$value);
+        if (function_exists('mb_substr')) {
+            return mb_substr($value, 0, $maxLen);
+        }
+        return substr($value, 0, $maxLen);
+    }
+
     // Admin: List All
     public function listAll() {
         $query = "SELECT * FROM licenses ORDER BY created_at DESC";
@@ -69,6 +128,124 @@ class LicenseController {
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         echo json_encode($rows);
+    }
+
+    /**
+     * 后台：查询记录列表，支持按日期区间筛选
+     * GET /api/license/query-logs?start=YYYY-MM-DD&end=YYYY-MM-DD
+     */
+    public function queryLogs() {
+        list($where, $params) = $this->buildLogDateFilter();
+
+        $sql = "SELECT id, queried_at, qq, owner_name, product_name, is_hit, ip
+                FROM query_logs {$where}
+                ORDER BY queried_at DESC, id DESC
+                LIMIT 2000";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // 统计当前筛选条件下的命中情况，便于客服快速核对
+        $statsStmt = $this->db->prepare(
+            "SELECT COUNT(*) AS total,
+                    SUM(is_hit = 1) AS hit_count,
+                    SUM(is_hit = 0) AS miss_count
+             FROM query_logs {$where}"
+        );
+        $statsStmt->execute($params);
+        $stats = $statsStmt->fetch(PDO::FETCH_ASSOC);
+
+        echo json_encode([
+            "logs"  => $rows,
+            "stats" => [
+                "total" => (int)$stats['total'],
+                "hit"   => (int)$stats['hit_count'],
+                "miss"  => (int)$stats['miss_count'],
+            ],
+        ]);
+    }
+
+    /**
+     * 后台：导出查询记录为 CSV（字段顺序按客服核对习惯排列）
+     * GET /api/license/query-logs/export?start=YYYY-MM-DD&end=YYYY-MM-DD
+     */
+    public function exportQueryLogs() {
+        list($where, $params) = $this->buildLogDateFilter();
+
+        $stmt = $this->db->prepare(
+            "SELECT queried_at, qq, owner_name, product_name, is_hit, ip
+             FROM query_logs {$where}
+             ORDER BY queried_at DESC, id DESC"
+        );
+        $stmt->execute($params);
+
+        // UTF-8 BOM，保证 Excel 打开中文不乱码
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="query_logs_' . date('YmdHis') . '.csv"');
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+
+        $out = fopen('php://output', 'w');
+        fwrite($out, "\xEF\xBB\xBF");
+
+        // 列顺序：客服核对时先看时间，再核对 QQ / 主人 / 产品，再看是否命中，最后看来源IP
+        fputcsv($out, ['查询时间', '授权QQ', '授权主人', '所属产品', '是否命中', '访问IP']);
+
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            fputcsv($out, [
+                $row['queried_at'],
+                $this->csvText($row['qq']),
+                $this->csvText($row['owner_name']),
+                $this->csvText($row['product_name']),
+                (int)$row['is_hit'] === 1 ? '命中' : '未命中',
+                $this->csvText($row['ip']),
+            ]);
+        }
+        fclose($out);
+    }
+
+    /**
+     * 根据 start / end 参数构造日期过滤条件（参数经过严格格式校验）。
+     */
+    private function buildLogDateFilter() {
+        $where = '';
+        $params = [];
+
+        $start = isset($_GET['start']) ? trim($_GET['start']) : '';
+        $end   = isset($_GET['end']) ? trim($_GET['end']) : '';
+
+        if ($start !== '' && $this->isValidDate($start)) {
+            $where .= "WHERE queried_at >= :start";
+            $params[':start'] = $start . ' 00:00:00';
+        }
+        if ($end !== '' && $this->isValidDate($end)) {
+            $where .= ($where === '' ? 'WHERE ' : ' AND ') . "queried_at <= :end";
+            $params[':end'] = $end . ' 23:59:59';
+        }
+        return [$where, $params];
+    }
+
+    private function isValidDate($value) {
+        $d = \DateTime::createFromFormat('Y-m-d', $value);
+        return $d && $d->format('Y-m-d') === $value;
+    }
+
+    /**
+     * CSV 单元格处理：空值统一为 '-'，自由文本防公式注入。
+     * QQ / IP 为纯数字或点分格式，不会被 Excel 当公式，但仍对异常输入做防护。
+     */
+    private function csvText($value) {
+        if ($value === null || $value === '') {
+            return '-';
+        }
+        $value = (string)$value;
+        // 纯数字、IPv4/IPv6 常见字符直接输出，避免 QQ/IP 被误加前缀
+        if (preg_match('/^[0-9A-Fa-f:\.]+$/', $value)) {
+            return $value;
+        }
+        if (preg_match('/^[=+\-@\t\r]/', $value)) {
+            return "'" . $value;
+        }
+        return $value;
     }
 
     // Admin: Create

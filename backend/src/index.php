@@ -59,6 +59,14 @@ elseif ($uri === '/api/license/list' && $_SERVER['REQUEST_METHOD'] === 'GET') {
     $license = new LicenseController($db);
     $license->listAll(); // Admin only, simplified auth for now
 }
+elseif ($uri === '/api/license/query-logs' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+    $license = new LicenseController($db);
+    $license->queryLogs(); // 后台：查询记录（可按日期筛选）
+}
+elseif ($uri === '/api/license/query-logs/export' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+    $license = new LicenseController($db);
+    $license->exportQueryLogs(); // 后台：导出查询记录 CSV
+}
 elseif ($uri === '/api/license/delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     $license = new LicenseController($db);
     $license->delete();
